@@ -11,4 +11,6 @@
 2. Rmd File : https://github.com/kradhakrishnan0714/Wine-Quality-Prediction/blob/main/Wine%20Quality%20Prediction_v2.Rmd
 3. Predicted Wine Quality : https://github.com/kradhakrishnan0714/Wine-Quality-Prediction/blob/main/predicted_wine_quality.csv
 4. Analysis Presentation : https://github.com/kradhakrishnan0714/Wine-Quality-Prediction/blob/main/Wine%20Quality%20Prediction%20%26%20Analysis.pptx
+5. Youtube Presentation : https://youtu.be/LAJHfz36k-g
+
 
