@@ -1,0 +1,502 @@
+---
+title: "Wine Quality Prediction"
+author: "Karthik Radhakrishnan"
+date: "2024-08-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(repos = "https://cloud.r-project.org/")
+```
+
+Load the required libraries
+```{r}
+library(GGally)
+library(readr)
+library(dplyr)
+library(caret)
+library(corrplot)
+library(ggplot2)
+library(tidyr)
+library(ggthemes)
+```
+
+Load the data
+```{r}
+wine_data <- read.csv("Wine Train Set.csv")
+head(wine_data)
+```
+Verify if the dataset has any missing values
+```{r}
+
+if (sum(is.na(wine_data))>0)
+{
+# Function to count NA values in each column
+count_na <- function(x) sum(is.na(x))
+
+# Count NA values in each column
+na_counts <- sapply(wine_data, count_na)
+
+
+  # Filter columns with NA values and sort in descending order
+columns_with_na <- na_counts[na_counts > 0]
+columns_with_na <- sort(columns_with_na, decreasing = TRUE)
+
+# Print the results
+cat("Columns with NA values and their counts:\n")
+print(columns_with_na)} else
+  {cat("There are no columns with missing values")}  
+
+```
+Converting categorical variables as factor
+```{r}
+
+# check the unique values on the character variables 
+
+print(unique(wine_data$location))
+
+# There was a typo for California in few rows. Correct this. 
+
+# Correct the typo
+wine_data$location <- ifelse(wine_data$location == "Califormia", "California", wine_data$location)
+
+# Validate the correction
+
+print(unique(wine_data$location))
+
+print(unique(wine_data$type))
+
+# Ensure categorical variables are factors
+wine_data$type <- as.factor(wine_data$type)
+wine_data$location <- as.factor(wine_data$location)
+
+#check the levels of factors
+str(wine_data$type)
+str(wine_data$location)
+
+
+# Verify the correction
+print(unique(wine_data$location))
+
+print(unique(wine_data$type))
+
+```
+Exploratory Data Analysis 
+
+```{r}
+library(tidyverse)
+library(gridExtra)
+
+numeric_vars <- names(wine_data)[sapply(wine_data, is.numeric)]
+numeric_vars <- setdiff(numeric_vars, c("quality","ID")) # Remove quality from predictors
+
+variables_to_plot <- c("quality", "alcohol", "volatile.acidity", "sulphates", "citric.acid", "total.sulfur.dioxide", "density", "pH")
+
+# Create the ggpairs plot
+ggpairs_plot <- ggpairs(wine_data[, variables_to_plot], 
+                        aes(color = factor(quality)), # Color by quality
+                        upper = list(continuous = "cor", combo = "box_no_facet"),
+                        lower = list(continuous = "smooth", combo = "facethist"),
+                        diag = list(continuous = "barDiag"),
+                        progress = FALSE) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 8))
+
+print(ggpairs_plot)
+# Function to test for non-linearity
+test_non_linearity <- function(data, y_var, x_var) {
+  model_linear <- lm(as.formula(paste(y_var, "~", x_var)), data = data)
+  model_quadratic <- lm(as.formula(paste(y_var, "~", x_var, "+", "I(", x_var, "^2)")), data = data)
+  anova_result <- anova(model_linear, model_quadratic)
+  return(anova_result$`Pr(>F)`[2])
+}
+
+# Test non-linearity for each numeric variable
+non_linearity_tests <- sapply(numeric_vars, function(var) test_non_linearity(wine_data, "quality", var))
+print(non_linearity_tests)
+```
+All the variables are showing significant non-linear relationship with low p values. 
+
+Implement random forest method
+
+```{r}
+#install.packages("randomForest")
+library(randomForest)
+library(caret)
+
+# Split the data into training and testing sets
+set.seed(123)  # for reproducibility
+train_index <- createDataPartition(wine_data$quality, p = 0.8, list = FALSE)
+train_data <- wine_data[train_index, ]
+test_data <- wine_data[-train_index, ]
+
+# Train the Random Forest model
+rf_model <- randomForest(quality ~ ., data = train_data, ntree = 500, importance = TRUE)
+
+# Make predictions on the test set
+predictions <- predict(rf_model, test_data)
+predictions_rounded <- round(predictions)
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(test_data$quality - predictions_rounded))
+
+# Print MAE
+cat("Mean Absolute Error (MAE):", mae, "\n\n")
+
+# Print Out-of-Bag (OOB) error estimate
+cat("Out-of-Bag (OOB) error estimate:", rf_model$mse[length(rf_model$mse)], "\n\n")
+
+# Get all unique quality levels from the entire dataset
+all_levels <- sort(unique(wine_data$quality))
+
+# Convert predictions and actual values to factors with the same levels
+predictions_factor <- factor(predictions_rounded, levels = all_levels)
+actual_factor <- factor(test_data$quality, levels = all_levels)
+
+# Check unique values in predictions and actual data
+print(unique(predictions_rounded))
+print(unique(test_data$quality))
+
+# Check if there are any NAs
+print(sum(is.na(predictions_rounded)))
+print(sum(is.na(test_data$quality)))
+
+# Confusion Matrix
+conf_matrix <- confusionMatrix(predictions_factor, actual_factor)
+print(conf_matrix)
+
+# Feature importance (optional, but often useful)
+importance_scores <- varImp(rf_model)
+print(importance_scores)
+varImpPlot(rf_model)
+```
+Accuracy of the above model is 70%. Trying other methods to improve accuracy.
+
+1. Address class imbalance and train the random forest model again. 
+```{r}
+
+# Custom function for oversampling
+oversample <- function(data, target_col, multiplier = 1) {
+  # Get class counts
+  class_counts <- table(data[[target_col]])
+  
+  # Find the maximum class count
+  max_count <- max(class_counts)
+  
+  # Initialize list to store oversampled data for each class
+  oversampled_data <- list()
+  
+  # Oversample each class
+  for (class in names(class_counts)) {
+    class_data <- data[data[[target_col]] == class, ]
+    n_samples <- nrow(class_data)
+    n_oversample <- max_count * multiplier - n_samples
+    
+    if (n_oversample > 0) {
+      oversampled <- class_data[sample(1:n_samples, n_oversample, replace = TRUE), ]
+      oversampled_data[[class]] <- rbind(class_data, oversampled)
+    } else {
+      oversampled_data[[class]] <- class_data
+    }
+  }
+  
+  # Combine all oversampled classes
+  result <- do.call(rbind, oversampled_data)
+  
+  # Shuffle the rows
+  result <- result[sample(1:nrow(result)), ]
+  
+  return(result)
+}
+
+# Check the structure of your data
+str(train_data)
+
+# Print unique values and their counts for the quality variable
+print("Distribution of quality before oversampling:")
+print(table(train_data$quality))
+
+# Ensure quality is a factor
+train_data$quality <- as.factor(train_data$quality)
+
+# Apply oversampling
+set.seed(123)
+train_data_balanced <- oversample(train_data, "quality")
+
+# Check class distribution after balancing
+print("Distribution of quality after oversampling:")
+print(table(train_data_balanced$quality))
+
+# Train model on balanced data
+rf_model_balanced <- randomForest(quality ~ ., data = train_data_balanced, ntree = 500, importance = TRUE)
+
+# Make predictions
+predictions_balanced <- predict(rf_model_balanced, test_data)
+
+# Evaluate
+mae_balanced <- mean(abs(as.numeric(as.character(test_data$quality)) - as.numeric(as.character(predictions_balanced))))
+cat("Mean Absolute Error (MAE) with Balanced Data:", mae_balanced, "\n")
+
+# Confusion Matrix
+all_levels <- sort(unique(c(levels(test_data$quality), levels(predictions_balanced))))
+conf_matrix_balanced <- confusionMatrix(factor(predictions_balanced, levels = all_levels), 
+                                        factor(test_data$quality, levels = all_levels))
+print(conf_matrix_balanced)
+
+```
+Accuracy is slightly improved to 72%. 
+
+2. Hyperparameter Tuning
+```{r}
+
+# Define the hyperparameter grid
+param_grid <- expand.grid(
+  mtry = seq(2, sqrt(ncol(train_data_balanced) - 1), length.out = 5) %>% floor(),
+  min.node.size = c(1, 3, 5),
+  splitrule = c("gini", "extratrees")
+)
+
+# Set up cross-validation
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  search = "grid"
+)
+
+# Perform grid search
+set.seed(123)
+rf_tuned <- train(quality ~ ., 
+                  data = train_data_balanced,
+                  method = "ranger",  # We use ranger as it's faster and allows for more tuning parameters
+                  tuneGrid = param_grid,
+                  trControl = ctrl,
+                  importance = "impurity"
+)
+
+# Print best parameters
+print(rf_tuned$bestTune)
+
+# Make predictions with the tuned model
+predictions_tuned <- predict(rf_tuned, test_data)
+
+# Evaluate
+
+mae_tuned <- mean(abs(as.numeric(as.character(test_data$quality)) - as.numeric(as.character(predictions_tuned))))
+cat("Mean Absolute Error (MAE) with tuned model:", mae_tuned, "\n")
+
+
+# Confusion Matrix
+all_levels <- sort(unique(c(test_data$quality, predictions_tuned)))
+conf_matrix_tuned <- confusionMatrix(factor(predictions_tuned, levels = all_levels), 
+                                     factor(test_data$quality, levels = all_levels))
+print(conf_matrix_tuned)
+
+# Print variable importance
+var_imp <- varImp(rf_tuned)
+print(var_imp)
+plot(var_imp)
+
+# Save the model
+saveRDS(rf_tuned, file = "rf_model.rds")
+```
+
+
+
+
+Comparing the accuracy & MAE of random forest model with Knn algorithm
+```{r}
+library(caret)
+library(class)
+
+# Ensure the target variable is a factor
+train_data_balanced$quality <- as.factor(train_data_balanced$quality)
+test_data$quality <- as.factor(test_data$quality)
+
+# Remove ID column and separate features and target variable
+features <- names(train_data_balanced)[!names(train_data_balanced) %in% c("quality")]
+target <- "quality"
+
+# Normalize the features
+preprocess_params <- preProcess(train_data_balanced[, features], 
+                                method = c("center", "scale"))
+train_normalized <- predict(preprocess_params, train_data_balanced[, features])
+test_normalized <- predict(preprocess_params, test_data[, features])
+
+
+
+# one hot encoding of categorical variables
+encoded <- dummyVars(" ~ .", data = train_normalized)
+train_encoded <- predict(encoded, newdata = train_normalized)
+test_encoded <- predict(encoded, newdata = test_normalized)
+
+
+# Set up cross-validation
+ctrl <- trainControl(method = "cv", number = 5)
+
+# Train KNN model with tuning
+knn_model <- train(x = train_encoded, 
+                   y = train_data_balanced[[target]],
+                   method = "knn",
+                   trControl = ctrl,
+                   tuneLength = 10)  # This will try 10 different values of k
+
+print(knn_model)
+
+# Make predictions
+predictions_knn <- predict(knn_model, newdata = test_encoded)
+
+
+# Evaluate
+conf_matrix_knn <- confusionMatrix(predictions_knn, test_data$quality)
+print(conf_matrix_knn)
+
+mae_knn <- mean(abs(as.numeric(predictions_knn) - as.numeric(test_data$quality)))
+print(paste("KNN MAE:", mae_knn))
+```
+
+Knn model has very less accuracy compared to random forest model. Hence use Random forest model to predict the values in independent
+test set
+
+```{r}
+# Read the independent test set
+wine_test_set <- read.csv("Wine Test Set.csv", check.names = FALSE)
+
+# Replace spaces with dots in column names
+names(wine_test_set) <- make.names(names(wine_test_set), unique = TRUE)
+
+# View the first few rows to confirm the changes
+head(wine_test_set)
+
+# check the unique values on the character variables 
+
+print(unique(wine_test_set$location))
+
+# There was a typo for California in few rows. Correct this. 
+
+# Correct the typo
+wine_test_set$location <- ifelse(wine_test_set$location == "Califormia", "California", wine_test_set$location)
+
+# Validate the correction
+
+print(unique(wine_test_set$location))
+
+print(unique(wine_test_set$type))
+
+# Ensure categorical variables are factors
+wine_test_set$type <- as.factor(wine_test_set$type)
+wine_test_set$location <- as.factor(wine_test_set$location)
+
+#check the levels of factors
+str(wine_test_set$type)
+str(wine_test_set$location)
+
+# Ensure the test set has the same features as the training set (excluding 'quality' and 'ID')
+required_features <- setdiff(names(train_data), c("quality", "ID"))
+missing_features <- setdiff(required_features, names(wine_test_set))
+
+if (length(missing_features) > 0) {
+  stop(paste("The following features are missing from the test set:", paste(missing_features, collapse = ", ")))
+}
+
+# Make predictions on the independent test set
+predictions <- predict(rf_tuned, wine_test_set)
+
+predictions_numeric <- as.numeric(predictions)
+
+# Create a data frame with ID and predicted Quality
+output_df <- data.frame(ID = wine_test_set$ID, quality = predictions_numeric)
+
+#verify if there is any NA values
+sum(is.na(output_df))
+
+# Write the output to a CSV file
+write.csv(output_df, "predicted_wine_quality.csv", row.names = FALSE,quote=FALSE)
+
+print("Predictions have been saved to 'predicted_wine_quality.csv'")
+```
+
+### Identifying Key determinants of high-quality wine
+
+Boxplots for each feature by quality
+```{r}
+long_data <- pivot_longer(wine_data, cols = c(2:12), names_to = "variable", values_to = "value")
+ggplot(long_data, aes(x = as.factor(quality), y = value)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free_y") +
+  theme_minimal() +
+  labs(x = "Quality", y = "Value")
+```
+Correlation matrix
+```{r}
+cor_matrix <- cor(wine_data[, c(2:12, 15)])
+corrplot(cor_matrix, method = c("number"), type = "full", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+Group the data into categories based on wine quality
+```{r}
+
+wine_data <- wine_data %>%
+  mutate(quality_category = cut(quality, breaks = c(-Inf, 4, 6, Inf), labels = c('low', 'medium', 'high')))
+
+# Summary statistics by quality category
+quality_summary <- wine_data %>%
+  group_by(quality_category) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+print(quality_summary)
+
+# Plot distributions of key variables by quality category
+variables_to_plot <- c('fixed.acidity', 'volatile.acidity', 'citric.acid', 'residual.sugar', 
+                       'chlorides', 'free.sulfur.dioxide', 'total.sulfur.dioxide', 
+                       'density', 'pH', 'sulphates', 'alcohol')
+
+# Create boxplots for each variable
+par(mfrow = c(4, 3))
+
+for (variable in variables_to_plot) {
+  p <- ggplot(wine_data, aes_string(x = 'quality_category', y = variable, fill = 'quality_category')) +
+    geom_boxplot() +
+    theme_economist() +
+    ggtitle(paste(variable, "by Quality Category")) +
+    theme(legend.position = "none") +
+    labs(x = "Quality Category", y = variable)
+  
+  print(p)  # Print the plot inside the loop
+}
+```
+Verifying the impact of location in producing high quality wine.
+```{r}
+# Group the data by location and quality category
+quality_location_summary <- wine_data %>%
+  group_by(location, quality_category) %>%
+  summarise(count = n())
+
+# Plotting the data
+ggplot(quality_location_summary, aes(x = location, y = count, fill = quality_category)) +
+  geom_bar(stat = 'identity', position = 'dodge') +
+  labs(title = "Comparison of Wine Quality Between Texas and California",
+       x = "Location",
+       y = "Count of Wines",
+       fill = "Quality Category") +
+  theme_minimal()
+```
+Verifying the impact of type of wine in producing high quality wine.
+
+```{r}
+# Group the data by type and quality category
+quality_type_summary <- wine_data %>%
+  group_by(type, quality_category) %>%
+  summarise(count = n())
+
+# Plotting the data
+ggplot(quality_type_summary, aes(x = type, y = count, fill = quality_category)) +
+  geom_bar(stat = 'identity', position = 'dodge') +
+  labs(title = "Comparison of Wine Quality Between Red and White Wines",
+       x = "Type of Wine",
+       y = "Count of Wines",
+       fill = "Quality Category") +
+  theme_minimal()
+```
